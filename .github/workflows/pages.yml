@@ -29,10 +29,13 @@ jobs:
             node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file "$migration"
           done
           printf '%s\n' 'ADMIN_TOKEN="local-only-integration-fixture-token-0000000000"' > .dev.vars
-          node scripts/run-framework.mjs dev --port 5174 > /tmp/sunset-backend.log 2>&1 &
+          node scripts/run-framework.mjs dev --hostname 127.0.0.1 --port 5174 > /tmp/sunset-backend.log 2>&1 &
           backend_pid=$!
           trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
-          node scripts/wait-for-backend.mjs
+          if ! node scripts/wait-for-backend.mjs; then
+            cat /tmp/sunset-backend.log
+            exit 1
+          fi
           TEST_ADMIN_TOKEN=local-only-integration-fixture-token-0000000000 node tests/integration.mjs
       - run: npm run build:pages
       - uses: actions/configure-pages@v5
