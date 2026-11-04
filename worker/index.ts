@@ -11,18 +11,12 @@ export default {
     if (!env.DB) return;
     ctx.waitUntil(
       (async () => {
-        const { syncFeed, expireHolds } = await import("../lib/server");
+        const { expireHolds } = await import("../lib/server");
+        const { synchronizeDueFeeds } = await import("../lib/calendar-sync");
         await expireHolds();
-        const feeds = await env
-          .DB!.prepare("SELECT id FROM calendar_feeds LIMIT 100")
-          .all<{ id: string }>();
-        for (const feed of feeds.results) {
-          try {
-            await syncFeed(feed.id);
-          } catch {
-            console.error("Scheduled calendar refresh failed");
-          }
-        }
+        const results = await synchronizeDueFeeds(env.DB!);
+        if (results.some((result) => result.status === "failed"))
+          console.error("Scheduled calendar refresh failed");
       })(),
     );
   },

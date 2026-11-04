@@ -1,11 +1,15 @@
 import { endpoint, database, expireHolds } from "@/lib/server";
-import { exportCalendar, Problem } from "@/lib/domain";
+import { Problem } from "@/lib/domain";
+import { propertyCalendarExport } from "@/lib/calendar-store";
 export const GET = (
   _request: Request,
   context: { params: Promise<{ token: string }> },
 ) =>
   endpoint(async () => {
-    const { token } = await context.params;
+    const { token: requested } = await context.params;
+    const token = requested.endsWith(".ics")
+      ? requested.slice(0, -4)
+      : requested;
     if (token.length < 64) throw new Problem(404, "Δεν βρέθηκε ημερολόγιο.");
     const p = await database()
       .prepare("SELECT id FROM properties WHERE export_token=?")
@@ -13,13 +17,7 @@ export const GET = (
       .first<{ id: string }>();
     if (!p) throw new Problem(404, "Δεν βρέθηκε ημερολόγιο.");
     await expireHolds();
-    const rows = await database()
-      .prepare(
-        "SELECT id,check_in,check_out FROM bookings WHERE property_id=? AND status IN ('confirmed','held')",
-      )
-      .bind(p.id)
-      .all<{ id: string; check_in: string; check_out: string }>();
-    return new Response(exportCalendar(rows.results), {
+    return new Response(await propertyCalendarExport(database(), p.id), {
       headers: {
         "Content-Type": "text/calendar; charset=utf-8",
         "Cache-Control": "no-store",

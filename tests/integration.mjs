@@ -1,5 +1,12 @@
 // Run only against the disposable local D1 preview, never a deployed environment.
 import assert from "node:assert/strict";
+const arrival = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+const departure = new Date(Date.parse(arrival) + 3 * 86400000)
+  .toISOString()
+  .slice(0, 10);
+const adjacentDeparture = new Date(Date.parse(arrival) + 5 * 86400000)
+  .toISOString()
+  .slice(0, 10);
 const base = process.env.API_BASE_URL || "http://127.0.0.1:5174";
 if (!["127.0.0.1", "localhost"].includes(new URL(base).hostname))
   throw new Error("Integration tests require loopback.");
@@ -58,7 +65,7 @@ const id = create.value.id;
 check(
   (
     await call(
-      `/api/availability?propertyId=${id}&checkIn=2027-06-01&checkOut=2027-06-04&guests=2`,
+      `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
     )
   ).status === 404,
   "draft stays private",
@@ -84,8 +91,8 @@ const update = await call(
 check(update.status === 200, "admin can publish property");
 const stay = {
   propertyId: id,
-  checkIn: "2027-06-01",
-  checkOut: "2027-06-04",
+  checkIn: arrival,
+  checkOut: departure,
   guests: 2,
   name: "Local test fixture",
   email: `fixture-${Date.now()}@example.invalid`,
@@ -126,7 +133,7 @@ check(
   "concurrent overlapping approvals have exactly one winner",
 );
 const blocked = await call(
-  `/api/availability?propertyId=${id}&checkIn=2027-06-01&checkOut=2027-06-04&guests=2`,
+  `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
 );
 check(
   blocked.status === 200 &&
@@ -135,7 +142,7 @@ check(
   "confirmed nights block availability",
 );
 const adjacent = await call(
-  `/api/availability?propertyId=${id}&checkIn=2027-06-04&checkOut=2027-06-06&guests=2`,
+  `/api/availability?propertyId=${id}&checkIn=${departure}&checkOut=${adjacentDeparture}&guests=2`,
 );
 check(
   adjacent.value.available === true,
@@ -160,7 +167,7 @@ check(
 check(
   (
     await call(
-      `/api/availability?propertyId=${id}&checkIn=2027-06-01&checkOut=2027-06-04&guests=2`,
+      `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
     )
   ).value.available === true,
   "cancellation releases nights",
@@ -193,5 +200,80 @@ check(
 check(
   (await call("/api/sync", {})).status === 401,
   "scheduled HTTP endpoint rejects unauthenticated callers",
+);
+const closure = await call(
+  "/api/admin",
+  {
+    action: "blockDates",
+    propertyId: id,
+    start: arrival,
+    end: departure,
+    note: "Private owner fixture",
+  },
+  true,
+);
+check(closure.status === 200, "owner can close dates without a fake booking");
+check(
+  (
+    await call(
+      `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
+    )
+  ).value.available === false,
+  "manual closure blocks availability",
+);
+const exported = await call("/api/calendars/" + p.export_token + ".ics");
+check(
+  exported.status === 200 &&
+    exported.value.includes("SUMMARY:Reserved") &&
+    !exported.value.includes("Private owner fixture"),
+  "ICS suffix export includes closure but omits private note",
+);
+const grid = await call(
+  `/api/admin/calendar?propertyId=${id}&month=${arrival.slice(0, 7)}`,
+  undefined,
+  true,
+);
+check(
+  grid.status === 200 &&
+    grid.value.entries.some(
+      (e) => e.source === "manual" && e.id === closure.value.id,
+    ),
+  "unified monthly calendar includes manual closure",
+);
+check(
+  (
+    await call(
+      `/api/admin/calendar?propertyId=${id}&month=${arrival.slice(0, 7)}`,
+    )
+  ).status === 401,
+  "calendar details require owner authentication",
+);
+check(
+  (
+    await call(
+      `/api/admin/calendar?propertyId=${id}&month=invalid`,
+      undefined,
+      true,
+    )
+  ).status === 400,
+  "calendar rejects malformed month",
+);
+check(
+  (
+    await call(
+      "/api/admin",
+      { action: "releaseBlock", id: closure.value.id },
+      true,
+    )
+  ).status === 200,
+  "owner can release own manual closure",
+);
+check(
+  (
+    await call(
+      `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
+    )
+  ).value.available === true,
+  "release opens dates when no other source blocks them",
 );
 console.log(`${checks} local API integration checks passed.`);

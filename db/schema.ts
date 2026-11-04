@@ -64,6 +64,14 @@ export const calendarFeeds = sqliteTable(
     url: text("url").notNull(),
     lastSynced: text("last_synced"),
     error: text("error"),
+    lastAttempt: text("last_attempt"),
+    nextSync: text("next_sync"),
+    failureCount: integer("failure_count").notNull().default(0),
+    eventCount: integer("event_count").notNull().default(0),
+    etag: text("etag"),
+    lastModified: text("last_modified"),
+    syncToken: text("sync_token"),
+    lockUntil: text("lock_until"),
   },
   (t) => [uniqueIndex("property_provider").on(t.propertyId, t.provider)],
 );
@@ -88,4 +96,16 @@ export const rateLimits = sqliteTable("rate_limits", {
 export const webhookEvents = sqliteTable("webhook_events", {
   id: text("id").primaryKey(),
   processedAt: text("processed_at").notNull(),
+});
+
+export const calendarBlocks = sqliteTable("calendar_blocks", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id")
+    .notNull()
+    .references(() => properties.id),
+  start: text("start").notNull(),
+  end: text("end").notNull(),
+  note: text("note").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+  releasedAt: text("released_at"),
 });

@@ -14,7 +14,9 @@ import {
   cancelBooking,
   property,
 } from "@/lib/server";
-import { Problem, calendarUrl, cleanText } from "@/lib/domain";
+import { Problem, cleanText } from "@/lib/domain";
+import { configureCalendarFeed } from "@/lib/calendar-sync";
+import { addCalendarBlock, releaseCalendarBlock } from "@/lib/calendar-store";
 export const GET = (request: Request) =>
   endpoint(async () => {
     await admin(request);
@@ -30,7 +32,7 @@ export const GET = (request: Request) =>
         .all(),
       db
         .prepare(
-          "SELECT id,property_id,provider,last_synced,error FROM calendar_feeds",
+          "SELECT id,property_id,provider,last_synced,error,last_attempt,next_sync,failure_count,event_count,lock_until FROM calendar_feeds",
         )
         .all(),
     ]);
@@ -52,24 +54,54 @@ export const POST = (request: Request) =>
     const input = await body(request);
     if (input.action === "property") return json(await saveProperty(input));
     if (input.action === "feed") {
-      const p = await property(input.propertyId, true),
-        provider = cleanText(input.provider, 20),
-        url = calendarUrl(input.url, provider),
-        id = crypto.randomUUID();
-      await database()
-        .prepare(
-          "INSERT INTO calendar_feeds (id,property_id,provider,url) VALUES (?,?,?,?) ON CONFLICT(property_id,provider) DO UPDATE SET url=excluded.url,last_synced=NULL,error=NULL",
-        )
-        .bind(id, p.id, provider, url)
-        .run();
-      const feed = await database()
-        .prepare(
-          "SELECT id FROM calendar_feeds WHERE property_id=? AND provider=?",
-        )
-        .bind(p.id, provider)
-        .first<{ id: string }>();
-      return json(await syncFeed(feed!.id));
+      const p = await property(input.propertyId, true);
+      return json(
+        await configureCalendarFeed(
+          database(),
+          p.id,
+          cleanText(input.provider, 20),
+          input.url,
+        ),
+      );
     }
+    if (input.action === "syncProperty") {
+      const p = await property(input.propertyId, true),
+        feeds = (
+          await database()
+            .prepare("SELECT id FROM calendar_feeds WHERE property_id=?")
+            .bind(p.id)
+            .all<{ id: string }>()
+        ).results;
+      const results = [];
+      for (const feed of feeds) {
+        try {
+          results.push(await syncFeed(feed.id));
+        } catch {
+          results.push({ id: feed.id, status: "failed" });
+        }
+      }
+      const failed = results.some((r) => r.status === "failed");
+      return json(
+        {
+          results,
+          ...(failed
+            ? {
+                error:
+                  "Ένα ή περισσότερα ημερολόγια δεν ανανεώθηκαν. Διατηρήθηκαν οι προηγούμενες δεσμεύσεις.",
+              }
+            : {}),
+        },
+        failed ? 502 : 200,
+      );
+    }
+    if (input.action === "blockDates") {
+      const p = await property(input.propertyId, true);
+      return json(await addCalendarBlock(database(), p.id, input));
+    }
+    if (input.action === "releaseBlock")
+      return json(
+        await releaseCalendarBlock(database(), cleanText(input.id, 100)),
+      );
     if (input.action === "sync")
       return json(await syncFeed(cleanText(input.id, 100)));
     if (input.action === "confirm") {

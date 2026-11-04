@@ -19,6 +19,8 @@
 
 ## Τι υλοποιείται στο backend
 
+Οδηγός εγκατάστασης, τα στοιχεία που ζητάμε από τον ιδιοκτήτη και οι έξι κατευθύνσεις συγχρονισμού: [docs/CALENDAR-SYNC.md](docs/CALENDAR-SYNC.md). Ο κώδικας περιλαμβάνει πλέον κοινό ημερολόγιο όλων των πηγών, χειροκίνητα κλεισίματα, ασφαλείς επαναλήψεις και προστασία από ταυτόχρονες ανανεώσεις.
+
 - Προσθήκη/επεξεργασία/δημοσίευση καταλυμάτων, χωρητικότητα, βασική τιμή ανά νύχτα, χρέωση καθαρισμού και ελάχιστη διαμονή. Νέα δημοσιευμένα καταλύματα εμφανίζονται αυτόματα στο πλήρες app. Η στατική προεπισκόπηση είναι ανεξάρτητη.
 - Αιτήματα κράτησης με server-side έλεγχο ημερομηνιών, χωρητικότητας και συνολικής τιμής σε ακέραια λεπτά. Αρχικά η τιμή της βίλας παραμένει κενή, μέχρι να οριστεί από τον ιδιοκτήτη.
 - Καταστάσεις `requested`, `held`, `confirmed`, `cancelled`, `expired`, `payment_review`. Τα αιτήματα δεν δεσμεύουν νύχτες.
@@ -55,13 +57,16 @@ npm run build:pages
 cp .env.example .dev.vars
 # Συμπληρώστε ένα δικό σας ADMIN_TOKEN. Μη χρησιμοποιείτε το fixture των tests.
 npm run build
-npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_uneven_deadpool.sql
+for migration in drizzle/*.sql; do
+  npx wrangler d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file "$migration"
+done
 npm run dev -- --port 5174
 ```
 
 - Site: `http://127.0.0.1:5174/`
 - Dashboard: `http://127.0.0.1:5174/admin`
 - Τοπική και παραγωγική βάση είναι διαφορετικές. Ποτέ μην ανεβάζετε `.dev.vars`, `.wrangler`, πραγματικά στοιχεία επισκεπτών ή database dumps στο repository.
+- Το παραπάνω loop αφορά νέα, κενή τοπική βάση. Αν η `0000` έχει εφαρμοστεί ήδη, εφαρμόστε μόνο τη νέα `0001`. Μην επαναλαμβάνετε ήδη εφαρμοσμένα SQL αρχεία.
 
 Προαιρετικός έλεγχος του τοπικού API, που γράφει μόνο αναγνωρίσιμα fixture δεδομένα:
 

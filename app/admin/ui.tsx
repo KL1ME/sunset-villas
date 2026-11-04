@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ArrowLeft,
   Plus,
@@ -11,11 +11,11 @@ import {
   LogOut,
   ShieldCheck,
   X,
-  Copy,
   ExternalLink,
 } from "lucide-react";
 import type { Property } from "@/lib/catalog";
 import "./admin.css";
+import CalendarCenter, { type CalendarFeedStatus } from "./calendars";
 type Booking = {
   id: string;
   property_id: string;
@@ -30,18 +30,11 @@ type Booking = {
   total: number | null;
   payment_status: string;
 };
-type Feed = {
-  id: string;
-  property_id: string;
-  provider: string;
-  last_synced: string | null;
-  error: string | null;
-};
 type AdminProperty = Property & { export_token: string };
 type State = {
   properties: AdminProperty[];
   bookings: Booking[];
-  feeds: Feed[];
+  feeds: CalendarFeedStatus[];
   payments: string;
 };
 const labels: Record<string, string> = {
@@ -68,12 +61,9 @@ export default function Admin() {
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false),
     [editing, setEditing] = useState<Partial<AdminProperty> | null>(null),
-    [feedForm, setFeedForm] = useState(false),
     [confirming, setConfirming] = useState<Booking | null>(null),
     [canceling, setCanceling] = useState<Booking | null>(null),
-    [reviewed, setReviewed] = useState(false),
-    [month, setMonth] = useState(new Date().toISOString().slice(0, 7)),
-    [calendarProperty, setCalendarProperty] = useState("");
+    [reviewed, setReviewed] = useState(false);
   async function load(access = token) {
     setBusy(true);
     setError("");
@@ -85,7 +75,6 @@ export default function Admin() {
       if (!r.ok) throw new Error(d.error);
       setData(d);
       setLogged(true);
-      setCalendarProperty((v) => v || d.properties[0]?.id || "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Σφάλμα");
     } finally {
@@ -218,7 +207,7 @@ export default function Admin() {
                   bookings: "Οι κρατήσεις σας",
                   properties: "Τα καταλύματά σας",
                   calendar: "Μια ματιά στον μήνα",
-                  connections: "Όλα συνδεδεμένα",
+                  connections: "Συνδέσεις ημερολογίων",
                 }[tab]
               }
             </h1>
@@ -398,168 +387,23 @@ export default function Admin() {
             </div>
           </section>
         )}
-        {tab === "calendar" && (
-          <section className="admin-panel">
-            <div className="admin-panel-title">
-              <h2>Δεσμευμένες νύχτες</h2>
-              <div className="admin-filters">
-                <select
-                  value={calendarProperty}
-                  onChange={(e) => setCalendarProperty(e.target.value)}
-                >
-                  {data!.properties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="month"
-                  value={month}
-                  onChange={(e) => setMonth(e.target.value)}
-                />
-              </div>
-            </div>
-            <p className="admin-help">
-              Οι επιβεβαιωμένες και προσωρινές δεσμεύσεις του site. Οι
-              εισαγόμενες δεσμεύσεις ελέγχονται επιπλέον στο API διαθεσιμότητας.
-            </p>
-            <div className="admin-calendar">
-              {["ΔΕΥ", "ΤΡΙ", "ΤΕΤ", "ΠΕΜ", "ΠΑΡ", "ΣΑΒ", "ΚΥΡ"].map((d) => (
-                <span className="weekday" key={d}>
-                  {d}
-                </span>
-              ))}
-              {Array.from(
-                { length: (new Date(month + "-01T12:00:00").getDay() + 6) % 7 },
-                (_, i) => (
-                  <div className="calendar-blank" key={"blank" + i} />
-                ),
-              )}
-              {Array.from(
-                {
-                  length: new Date(
-                    Number(month.slice(0, 4)),
-                    Number(month.slice(5, 7)),
-                    0,
-                  ).getDate(),
-                },
-                (_, i) => {
-                  const day = month + "-" + String(i + 1).padStart(2, "0"),
-                    bookings = data!.bookings.filter(
-                      (b) =>
-                        b.property_id === calendarProperty &&
-                        ["confirmed", "held"].includes(b.status) &&
-                        b.check_in <= day &&
-                        b.check_out > day,
-                    );
-                  return (
-                    <div
-                      className={
-                        bookings.length
-                          ? "calendar-day occupied"
-                          : "calendar-day"
-                      }
-                      key={day}
-                    >
-                      <span>{i + 1}</span>
-                      {bookings.map((b) => (
-                        <small key={b.id}>{b.name}</small>
-                      ))}
-                    </div>
-                  );
-                },
-              )}
-            </div>
-          </section>
+        {(tab === "calendar" || tab === "connections") && (
+          <CalendarCenter
+            token={token}
+            properties={data!.properties}
+            feeds={data!.feeds}
+            view={tab}
+            reload={load}
+          />
         )}
         {tab === "connections" && (
           <section className="admin-panel">
-            <div className="admin-panel-title">
-              <h2>Ημερολόγια & πληρωμές</h2>
-              <button
-                className="button small"
-                onClick={() => setFeedForm(true)}
-              >
-                <Plus size={15} />
-                Σύνδεση iCal
-              </button>
-            </div>
-            <div className="notice">
-              <ShieldCheck size={21} />
-              <p>
-                Το iCal ενημερώνει δεσμευμένες ημερομηνίες με καθυστέρηση. Δεν
-                συγχρονίζει τιμές. Για εμπορική λειτουργία με άμεση επιβεβαίωση
-                χρειάζεται εγκεκριμένος channel manager.
-              </p>
-            </div>
-            {data!.properties.map((p) => (
-              <div className="connection-property" key={p.id}>
-                <h3>{p.name}</h3>
-                {["airbnb", "booking"].map((provider) => {
-                  const f = data!.feeds.find(
-                    (f) => f.provider === provider && f.property_id === p.id,
-                  );
-                  return (
-                    <div className="connection-row" key={provider}>
-                      <strong>
-                        {provider === "airbnb" ? "Airbnb" : "Booking.com"}
-                      </strong>
-                      <span>
-                        {!f
-                          ? "Δεν έχει συνδεθεί"
-                          : f.error
-                            ? "Σφάλμα συγχρονισμού"
-                            : f.last_synced
-                              ? "Τελευταία ενημέρωση: " +
-                                new Date(f.last_synced).toLocaleString("el-GR")
-                              : "Αναμονή συγχρονισμού"}
-                      </span>
-                      {f && (
-                        <button
-                          className="admin-action"
-                          disabled={busy}
-                          onClick={() =>
-                            void action({ action: "sync", id: f.id })
-                          }
-                        >
-                          Συγχρονισμός
-                        </button>
-                      )}
-                      {f?.error && (
-                        <small className="form-error">{f.error}</small>
-                      )}
-                    </div>
-                  );
-                })}
-                <button
-                  className="text-link"
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(
-                      location.origin + "/api/calendars/" + p.export_token,
-                    );
-                    setNotice(
-                      "Αντιγράφηκε το μυστικό iCal export URL. Χρησιμοποιήστε το μόνο στις πλατφόρμες σας.",
-                    );
-                  }}
-                >
-                  <Copy size={14} />
-                  Αντιγραφή iCal του site
-                </button>
-              </div>
-            ))}
-            <div className="connection-property">
-              <h3>Stripe Checkout</h3>
-              <p>
-                {data!.payments === "test"
-                  ? "Συνδεδεμένη σε δοκιμαστική λειτουργία."
-                  : "Δεν έχει συνδεθεί. Απαιτούνται test secret key και webhook secret στο backend."}
-              </p>
-              <p className="admin-help">
-                Η έκδοση δέχεται μόνο δοκιμαστικά κλειδιά. Η επιβεβαίωση
-                πληρωμής γίνεται μέσω υπογεγραμμένου webhook.
-              </p>
-            </div>
+            <h2>Stripe Checkout</h2>
+            <p className="admin-help">
+              {data!.payments === "test"
+                ? "Συνδεδεμένη σε δοκιμαστική λειτουργία."
+                : "Δεν έχει συνδεθεί. Οι πληρωμές θα ρυθμιστούν σε επόμενο στάδιο."}
+            </p>
           </section>
         )}
       </main>
@@ -706,76 +550,6 @@ export default function Admin() {
               <button className="button" disabled={busy}>
                 Αποθήκευση
                 <Check size={16} />
-              </button>
-            </form>
-          </section>
-        </div>
-      )}
-      {feedForm && (
-        <div className="admin-modal-backdrop">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-label="Σύνδεση ημερολογίου"
-            className="admin-modal"
-          >
-            <button
-              className="dialog-close icon-button"
-              aria-label="Κλείσιμο"
-              onClick={() => setFeedForm(false)}
-            >
-              <X />
-            </button>
-            <h2>Σύνδεση ημερολογίου</h2>
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
-                if (
-                  await action({
-                    action: "feed",
-                    propertyId: f.get("propertyId"),
-                    provider: f.get("provider"),
-                    url: f.get("url"),
-                  })
-                )
-                  setFeedForm(false);
-              }}
-            >
-              <label>
-                Κατάλυμα
-                <select name="propertyId">
-                  {data!.properties.map((p) => (
-                    <option value={p.id} key={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Πλατφόρμα
-                <select name="provider">
-                  <option value="airbnb">Airbnb</option>
-                  <option value="booking">Booking.com</option>
-                </select>
-              </label>
-              <label>
-                Μυστικό iCal export URL
-                <input
-                  type="url"
-                  name="url"
-                  required
-                  placeholder="https://..."
-                />
-              </label>
-              <p>
-                Από το extranet της πλατφόρμας: εξαγωγή ημερολογίου. Ο σύνδεσμος
-                αποθηκεύεται μόνο στο backend.
-              </p>
-              {error && <p className="form-error">{error}</p>}
-              <button className="button" disabled={busy}>
-                Σύνδεση & εισαγωγή
-                <RefreshCw size={16} />
               </button>
             </form>
           </section>

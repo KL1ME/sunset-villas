@@ -77,76 +77,137 @@ export function quote(nights: number, base: number | null, cleaning: number) {
   return base === null ? null : nights * base + cleaning;
 }
 export type CalendarEvent = { uid: string; start: string; end: string };
-// Whole-day VEVENTs only. Unsupported recurrence/time zones fail the entire refresh,
-// preserving the last successful snapshot instead of silently opening dates.
+// Reservation calendars: whole-day, non-recurring VEVENTs. Unknown/partial
+// structure fails the complete refresh so the previous snapshot stays closed.
 export function parseCalendar(text: string): CalendarEvent[] {
-  if (
-    text.length > 1_000_000 ||
-    !text.includes("BEGIN:VCALENDAR") ||
-    !text.includes("END:VCALENDAR")
-  )
-    throw new Problem(400, "Μη έγκυρο ημερολόγιο iCal.");
-  const unfolded = text.replace(/\r?\n[ \t]/g, "");
-  const blocks = [
-    ...unfolded.matchAll(/BEGIN:VEVENT\r?\n([\s\S]*?)END:VEVENT/g),
-  ];
-  if (
-    blocks.length !== (unfolded.match(/BEGIN:VEVENT/g) || []).length ||
-    blocks.length !== (unfolded.match(/END:VEVENT/g) || []).length
-  )
-    throw new Problem(400, "Ελλιπές ημερολόγιο iCal.");
+  if (new TextEncoder().encode(text).length > 1_000_000)
+    throw new Problem(400, "Το ημερολόγιο είναι πολύ μεγάλο.");
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .replace(/\r?\n[ \t]/g, "")
+    .split(/\r?\n/);
+  const stack: string[] = [];
   const events: CalendarEvent[] = [];
-  for (const [, block] of blocks) {
-    const lines = block.split(/\r?\n/);
-    let uid = "",
-      start = "",
-      end = "",
-      cancelled = false;
-    for (const line of lines) {
-      const separator = line.indexOf(":");
-      if (separator < 0) continue;
-      const key = line.slice(0, separator),
-        value = line.slice(separator + 1).trim();
-      if (key === "STATUS" && value === "CANCELLED") cancelled = true;
-      if (/^(RRULE|RDATE|EXDATE|RECURRENCE-ID)(;|$)/.test(key))
+  let calendarCount = 0,
+    version = "",
+    event: Map<string, { parameters: string; value: string }> | null = null;
+  const fail = () => {
+    throw new Problem(400, "Μη έγκυρο ή ελλιπές ημερολόγιο iCal.");
+  };
+  for (const raw of lines) {
+    if (!raw.trim()) continue;
+    const colon = raw.indexOf(":");
+    if (colon < 1) fail();
+    const key = raw.slice(0, colon),
+      value = raw.slice(colon + 1).trim();
+    const name = key.split(";", 1)[0].toUpperCase();
+    if (name === "BEGIN") {
+      const component = value.toUpperCase();
+      if (!stack.length) {
+        if (component !== "VCALENDAR" || ++calendarCount !== 1) fail();
+      } else if (
+        component === "VCALENDAR" ||
+        (component === "VEVENT" && stack.at(-1) !== "VCALENDAR")
+      )
+        fail();
+      if (["VTODO", "VJOURNAL", "VFREEBUSY"].includes(component))
         throw new Problem(
           400,
-          "Το ημερολόγιο έχει επαναλαμβανόμενα συμβάντα που χρειάζονται έλεγχο.",
+          "Χρειάζεται ημερολόγιο κρατήσεων με συμβάντα VEVENT.",
         );
-      if (key === "UID") uid = value;
-      if (/^DT(START|END)(;|$)/.test(key)) {
+      if (component === "VEVENT") event = new Map();
+      stack.push(component);
+      continue;
+    }
+    if (name === "END") {
+      if (!stack.length || stack.at(-1) !== value.toUpperCase()) fail();
+      if (stack.at(-1) === "VEVENT") {
+        if (!event) fail();
+        const fields = event!;
         if (
-          !/^\d{8}$/.test(value) ||
-          (!key.includes("VALUE=DATE") && key.includes(";"))
-        )
-          throw new Problem(
-            400,
-            "Απαιτούνται ημερολόγια κρατήσεων με ολοήμερα συμβάντα.",
-          );
-        const parsed = dateOnly(
-          `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`,
-        );
-        if (key.startsWith("DTSTART")) start = parsed;
-        else end = parsed;
+          fields.get("STATUS")?.value.toUpperCase() !== "CANCELLED" &&
+          fields.get("TRANSP")?.value.toUpperCase() !== "TRANSPARENT"
+        ) {
+          if (
+            ["RRULE", "RDATE", "EXDATE", "RECURRENCE-ID"].some((key) =>
+              fields.has(key),
+            )
+          )
+            throw new Problem(
+              400,
+              "Το ημερολόγιο έχει επαναλαμβανόμενα συμβάντα που χρειάζονται έλεγχο.",
+            );
+          const uid = fields.get("UID")?.value;
+          if (!uid || uid.length > 500 || /[\x00-\x1f]/.test(uid)) fail();
+          const readDate = (key: string) => {
+            const field = fields.get(key);
+            if (
+              !field ||
+              !/^\d{8}$/.test(field.value) ||
+              (field.parameters &&
+                field.parameters.toUpperCase() !== ";VALUE=DATE")
+            )
+              throw new Problem(
+                400,
+                "Απαιτούνται ημερολόγια κρατήσεων με ολοήμερα συμβάντα.",
+              );
+            const v = field.value;
+            return dateOnly(
+              `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}`,
+            );
+          };
+          const start = readDate("DTSTART"),
+            end = readDate("DTEND");
+          if (start >= end) fail();
+          events.push({ uid: uid!, start, end });
+        }
+        event = null;
+      }
+      stack.pop();
+      continue;
+    }
+    if (!stack.length) fail();
+    if (stack.length === 1 && name === "VERSION") {
+      if (version || value !== "2.0") fail();
+      version = value;
+    }
+    if (stack.at(-1) === "VEVENT" && event) {
+      // Notes, guest names, descriptions, URLs and attendees are not retained.
+      if (
+        [
+          "UID",
+          "DTSTART",
+          "DTEND",
+          "STATUS",
+          "TRANSP",
+          "RRULE",
+          "RDATE",
+          "EXDATE",
+          "RECURRENCE-ID",
+        ].includes(name)
+      ) {
+        if (event.has(name)) fail();
+        event.set(name, { parameters: key.slice(name.length), value });
       }
     }
-    if (cancelled) continue;
-    if (!uid || !start || !end || start >= end)
-      throw new Problem(400, "Βρέθηκε ελλιπές συμβάν στο ημερολόγιο.");
-    events.push({ uid: uid.slice(0, 500), start, end });
   }
   if (
+    stack.length ||
+    calendarCount !== 1 ||
+    version !== "2.0" ||
     events.length > 2000 ||
     new Set(events.map((e) => e.uid)).size !== events.length
   )
-    throw new Problem(
-      400,
-      "Το ημερολόγιο περιέχει υπερβολικά ή διπλά συμβάντα.",
-    );
+    fail();
   return events;
 }
 export function calendarUrl(value: unknown, provider: string) {
-  const url = new URL(cleanText(value, 3000));
+  let url: URL;
+  try {
+    url = new URL(cleanText(value, 3000));
+  } catch {
+    throw new Problem(400, "Συμπληρώστε έγκυρο HTTPS iCal export URL.");
+  }
   const hosts: Record<string, string[]> = {
     airbnb: ["www.airbnb.com", "airbnb.com"],
     booking: ["admin.booking.com", "ical.booking.com"],
@@ -156,11 +217,15 @@ export function calendarUrl(value: unknown, provider: string) {
     url.port ||
     url.username ||
     url.password ||
+    url.hash ||
     !hosts[provider]?.includes(url.hostname) ||
     !(
       /\/(calendar|ical)\//.test(url.pathname) ||
       url.pathname.endsWith(".ics") ||
-      (provider === "booking" && url.pathname === "/hotel/hoteladmin/ical.html")
+      (provider === "booking" &&
+        (url.pathname === "/hotel/hoteladmin/ical.html" ||
+          (url.hostname === "ical.booking.com" &&
+            url.pathname === "/v1/export")))
     )
   )
     throw new Problem(

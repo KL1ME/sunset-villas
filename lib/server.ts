@@ -1,8 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
   Problem,
-  calendarUrl,
-  parseCalendar,
   nightsBetween,
   validateStay,
   cleanText,
@@ -10,6 +8,7 @@ import {
   quote,
 } from "./domain";
 import { villa, type Property } from "./catalog";
+import { synchronizeFeed, SYNC_INTERVAL_MS } from "./calendar-sync";
 export function database() {
   if (!env.DB) throw new Problem(503, "Η βάση δεδομένων δεν είναι διαθέσιμη.");
   return env.DB;
@@ -156,94 +155,51 @@ export async function expireHolds() {
   ]);
 }
 export async function syncFeed(id: string) {
-  const db = database();
-  const feed = await db
-    .prepare("SELECT * FROM calendar_feeds WHERE id=?")
-    .bind(id)
-    .first<{
-      id: string;
-      url: string;
-      provider: string;
-      property_id: string;
-    }>();
-  if (!feed) throw new Problem(404, "Δεν βρέθηκε ημερολόγιο.");
-  try {
-    const url = calendarUrl(feed.url, feed.provider);
-    const response = await fetch(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(12000),
-      headers: { Accept: "text/calendar" },
-    });
-    if (!response.ok)
-      throw new Problem(502, "Η πλατφόρμα δεν επέστρεψε το ημερολόγιο.");
-    if (Number(response.headers.get("content-length") || 0) > 1_000_000)
-      throw new Problem(400, "Το ημερολόγιο είναι πολύ μεγάλο.");
-    // Bound decoded download size even when Content-Length is absent or incorrect.
-    const reader = response.body?.getReader();
-    if (!reader) throw new Problem(502, "Κενό ημερολόγιο.");
-    const decoder = new TextDecoder();
-    let text = "",
-      size = 0;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 1_000_000) {
-        await reader.cancel();
-        throw new Problem(400, "Το ημερολόγιο είναι πολύ μεγάλο.");
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    const events = parseCalendar(text);
-    const statements = [
-      db.prepare("DELETE FROM calendar_events WHERE feed_id=?").bind(id),
-      ...events.map((e) =>
-        db
-          .prepare(
-            "INSERT INTO calendar_events (id,feed_id,uid,start,end) VALUES (?,?,?,?,?)",
-          )
-          .bind(crypto.randomUUID(), id, e.uid, e.start, e.end),
-      ),
-      db
-        .prepare(
-          "UPDATE calendar_feeds SET last_synced=?,error=NULL WHERE id=?",
-        )
-        .bind(new Date().toISOString(), id),
-    ];
-    await db.batch(statements);
-    return { ok: true, events: events.length };
-  } catch (error) {
-    const message =
-      error instanceof Problem
-        ? error.message
-        : "Ο συγχρονισμός απέτυχε. Διατηρήθηκε το τελευταίο επιτυχές ημερολόγιο.";
-    await db
-      .prepare("UPDATE calendar_feeds SET error=? WHERE id=?")
-      .bind(message, id)
-      .run();
-    throw new Problem(502, message);
-  }
+  return synchronizeFeed(database(), id, { force: true });
 }
 export async function refreshStale(propertyId: string) {
+  const db = database();
   const feeds = (
-    await database()
-      .prepare("SELECT id,last_synced FROM calendar_feeds WHERE property_id=?")
+    await db
+      .prepare(
+        "SELECT id,last_synced,error FROM calendar_feeds WHERE property_id=?",
+      )
       .bind(propertyId)
-      .all<{ id: string; last_synced: string | null }>()
+      .all<{ id: string; last_synced: string | null; error: string | null }>()
   ).results;
-  for (const feed of feeds)
+  for (const feed of feeds) {
     if (
       !feed.last_synced ||
-      Date.parse(feed.last_synced) < Date.now() - 15 * 60_000
+      Date.parse(feed.last_synced) < Date.now() - SYNC_INTERVAL_MS
     )
-      await syncFeed(feed.id);
-  return feeds.length;
+      await synchronizeFeed(db, feed.id);
+  }
+  const current = (
+    await db
+      .prepare(
+        "SELECT last_synced,error FROM calendar_feeds WHERE property_id=?",
+      )
+      .bind(propertyId)
+      .all<{ last_synced: string | null; error: string | null }>()
+  ).results;
+  if (
+    current.some(
+      (f) =>
+        f.error ||
+        !f.last_synced ||
+        Date.parse(f.last_synced) < Date.now() - 2 * SYNC_INTERVAL_MS,
+    )
+  )
+    throw new Problem(
+      503,
+      "Η διαθεσιμότητα δεν μπορεί να επιβεβαιωθεί τώρα. Χρειάζεται ενημέρωση των ημερολογίων.",
+    );
+  return current.length;
 }
 export async function blocked(propertyId: string, start: string, end: string) {
   await expireHolds();
   const db = database();
-  const [own, external] = await Promise.all([
+  const [own, external, manual] = await Promise.all([
     db
       .prepare(
         "SELECT date FROM occupied_nights WHERE property_id=? AND date>=? AND date<?",
@@ -256,9 +212,15 @@ export async function blocked(propertyId: string, start: string, end: string) {
       )
       .bind(propertyId, end, start)
       .all<{ start: string; end: string }>(),
+    db
+      .prepare(
+        "SELECT start,end FROM calendar_blocks WHERE property_id=? AND released_at IS NULL AND start<? AND end>?",
+      )
+      .bind(propertyId, end, start)
+      .all<{ start: string; end: string }>(),
   ]);
   const dates = new Set(own.results.map((n) => n.date));
-  for (const e of external.results) {
+  for (const e of [...external.results, ...manual.results]) {
     let day = e.start > start ? e.start : start;
     const until = e.end < end ? e.end : end;
     while (day < until) {
