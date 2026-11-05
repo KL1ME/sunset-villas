@@ -43,6 +43,35 @@ check(
   (await call("/api/admin")).status === 401,
   "admin rejects anonymous reads",
 );
+const seeded = await call("/api/admin", undefined, true);
+const seededK1 = seeded.value.properties.find(
+  (p) => p.id === "sunset-luxury-villa",
+);
+const seededK2 = seeded.value.properties.find(
+  (p) => p.id === "sunset-luxury-villa-k2",
+);
+check(
+  seededK1?.internal_code === "K1" && seededK2?.internal_code === "K2",
+  "owner calendar codes identify the correct properties",
+);
+check(
+  seededK2.published === 0 &&
+    (
+      await call(
+        `/api/availability?propertyId=${seededK2.id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
+      )
+    ).status === 404,
+  "second calendar property starts as a private draft",
+);
+const seededAgain = await call("/api/admin", undefined, true);
+check(
+  [seededK1, seededK2].every(
+    (unit) =>
+      seededAgain.value.properties.find((p) => p.id === unit.id)?.export_token ===
+      unit.export_token,
+  ),
+  "repeated initialization preserves existing calendar export tokens",
+);
 const create = await call(
   "/api/admin",
   {

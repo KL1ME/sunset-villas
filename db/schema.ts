@@ -9,6 +9,7 @@ export const properties = sqliteTable("properties", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
+  internalCode: text("internal_code").unique(),
   location: text("location").notNull(),
   description: text("description").notNull(),
   maxGuests: integer("max_guests").notNull(),

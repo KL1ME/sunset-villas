@@ -15,6 +15,13 @@
       "when": 1793808612516,
       "tag": "0001_cooing_kinsey_walden",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793873552171,
+      "tag": "0002_wet_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

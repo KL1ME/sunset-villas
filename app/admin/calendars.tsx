@@ -25,7 +25,10 @@ export type CalendarFeedStatus = {
 };
 type Props = {
   token: string;
-  properties: (Property & { export_token: string })[];
+  properties: (Property & {
+    export_token: string;
+    internal_code?: string | null;
+  })[];
   feeds: CalendarFeedStatus[];
   view: "calendar" | "connections";
   reload: () => Promise<void>;
@@ -188,6 +191,7 @@ export default function CalendarCenter({
             >
               {properties.map((p) => (
                 <option key={p.id} value={p.id}>
+                  {p.internal_code ? p.internal_code + " · " : ""}
                   {p.name}
                 </option>
               ))}
@@ -407,6 +411,12 @@ export default function CalendarCenter({
             και οι πλατφόρμες, κάντε τις παρακάτω ρυθμίσεις μία φορά στη
             διαχείρισή τους.
           </p>
+          <p>
+            Αν Airbnb και Booking είναι ήδη συνδεδεμένα μεταξύ τους,
+            διατηρήστε αυτές τις συνδέσεις. Προσθέστε μόνο το ημερολόγιο του
+            site σε κάθε πλατφόρμα, αφού το backend αποκτήσει δημόσια HTTPS
+            διεύθυνση.
+          </p>
           <ol>
             <li>
               <strong>Site → Airbnb:</strong> αντιγράψτε το iCal του site και
@@ -418,11 +428,11 @@ export default function CalendarCenter({
             </li>
             <li>
               <strong>Booking → Airbnb:</strong> προσθέστε το export iCal της
-              Booking στην Airbnb.
+              Booking στην Airbnb, μόνο αν δεν υπάρχει ήδη η σύνδεση.
             </li>
             <li>
               <strong>Airbnb → Booking:</strong> προσθέστε το export iCal της
-              Airbnb στην Booking.
+              Airbnb στην Booking, μόνο αν δεν υπάρχει ήδη η σύνδεση.
             </li>
           </ol>
           <div className="notice">

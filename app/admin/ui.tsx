@@ -30,7 +30,10 @@ type Booking = {
   total: number | null;
   payment_status: string;
 };
-type AdminProperty = Property & { export_token: string };
+type AdminProperty = Property & {
+  export_token: string;
+  internal_code: string | null;
+};
 type State = {
   properties: AdminProperty[];
   bookings: Booking[];
@@ -369,6 +372,7 @@ export default function Admin() {
                   )}
                   <div>
                     <span className="eyebrow">
+                      {p.internal_code ? p.internal_code + " · " : ""}
                       {p.published ? "ΔΗΜΟΣΙΕΥΜΕΝΟ" : "ΠΡΟΣΧΕΔΙΟ"}
                     </span>
                     <h3>{p.name}</h3>

@@ -359,3 +359,86 @@ test("parser accepts folded lines and cancellations without dates, but rejects m
   ])
     assert.throws(() => parseCalendar(source));
 });
+
+test("Greek Airbnb exports are accepted without broadening host access", () => {
+  assert.equal(
+    new URL(
+      calendarUrl(
+        "https://www.airbnb.gr/calendar/ical/123.ics?t=fixture-only",
+        "airbnb",
+      ),
+    ).hostname,
+    "www.airbnb.gr",
+  );
+  assert.throws(() =>
+    calendarUrl(
+      "https://www.airbnb.gr.evil.example/calendar/ical/123.ics?t=fixture-only",
+      "airbnb",
+    ),
+  );
+  assert.throws(() =>
+    calendarUrl(
+      "https://airbnb.example/calendar/ical/123.ics?t=fixture-only",
+      "airbnb",
+    ),
+  );
+});
+test("redirects use the Workers-compatible manual mode and never follow Location", async () => {
+  const f = setup();
+  let requests = 0;
+  try {
+    const fetcher = (async (_url, init) => {
+      requests++;
+      assert.equal(init?.redirect, "manual");
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "http://127.0.0.1/private" },
+      });
+    }) as typeof fetch;
+    await assert.rejects(
+      () => synchronizeFeed(f.db, "airbnb", { now, fetcher }),
+      /HTTP 302/,
+    );
+    assert.equal(requests, 1);
+    assert.equal(
+      f.sqlite.prepare("SELECT COUNT(*) AS n FROM calendar_events").get()!.n,
+      0,
+    );
+  } finally {
+    f.close();
+  }
+});
+test("Booking invalid-token errors are actionable without retaining the token or remote body", async () => {
+  const f = setup();
+  try {
+    f.sqlite
+      .prepare("UPDATE calendar_feeds SET provider=?,url=? WHERE id=?")
+      .run(
+        "booking",
+        "https://ical.booking.com/v1/export?t=fixture-only",
+        "airbnb",
+      );
+    const fetcher = (async () =>
+      new Response(
+        JSON.stringify({
+          title: "Bad Request",
+          detail: "Invalid Token",
+          instance: "PRIVATE-UPSTREAM-INSTANCE",
+        }),
+        {
+          status: 400,
+          headers: { "content-type": "application/problem+json" },
+        },
+      )) as typeof fetch;
+    await assert.rejects(
+      () => synchronizeFeed(f.db, "airbnb", { now, fetcher }),
+      /Invalid Token/,
+    );
+    const stored = String(
+      f.sqlite.prepare("SELECT error FROM calendar_feeds").get()!.error,
+    );
+    assert.doesNotMatch(stored, /fixture-only|PRIVATE-UPSTREAM|https:\/\//);
+  } finally {
+    f.close();
+  }
+});

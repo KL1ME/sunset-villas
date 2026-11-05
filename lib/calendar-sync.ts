@@ -97,7 +97,9 @@ export async function synchronizeFeed(
       headers["If-Modified-Since"] = feed.last_modified;
     const response = await (options.fetcher || fetch)(
       calendarUrl(feed.url, feed.provider),
-      { redirect: "error", headers, signal: AbortSignal.timeout(12000) },
+      // Workers support manual/follow only. Reject non-304 redirects below,
+      // without ever fetching their Location (which may leave the allowlist).
+      { redirect: "manual", headers, signal: AbortSignal.timeout(12000) },
     );
     const completed = now(),
       next = new Date(completed.getTime() + SYNC_INTERVAL_MS).toISOString();
@@ -115,6 +117,26 @@ export async function synchronizeFeed(
         status: result.meta.changes ? "unchanged" : "superseded",
         events: feed.event_count,
       };
+    }
+    if (
+      !response.ok &&
+      feed.provider === "booking" &&
+      response.status === 400
+    ) {
+      let detail = "";
+      try {
+        const problem = JSON.parse(await readCalendar(response)) as {
+          detail?: unknown;
+        };
+        if (typeof problem.detail === "string") detail = problem.detail;
+      } catch {
+        /* Never retain the remote error body. */
+      }
+      if (detail.trim().toLowerCase() === "invalid token")
+        throw new Problem(
+          502,
+          "Η Booking απορρίπτει το iCal link ως «Invalid Token». Χρειάζεται έλεγχος του export link από τον ιδιοκτήτη.",
+        );
     }
     if (!response.ok)
       throw new Problem(

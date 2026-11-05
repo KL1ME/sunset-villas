@@ -209,7 +209,7 @@ export function calendarUrl(value: unknown, provider: string) {
     throw new Problem(400, "Συμπληρώστε έγκυρο HTTPS iCal export URL.");
   }
   const hosts: Record<string, string[]> = {
-    airbnb: ["www.airbnb.com", "airbnb.com"],
+    airbnb: ["www.airbnb.com", "airbnb.com", "www.airbnb.gr", "airbnb.gr"],
     booking: ["admin.booking.com", "ical.booking.com"],
   };
   if (

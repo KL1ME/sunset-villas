@@ -7,7 +7,7 @@ import {
   emailAddress,
   quote,
 } from "./domain";
-import { villa, type Property } from "./catalog";
+import { calendarUnits, type Property } from "./catalog";
 import { synchronizeFeed, SYNC_INTERVAL_MS } from "./calendar-sync";
 export function database() {
   if (!env.DB) throw new Problem(503, "Η βάση δεδομένων δεν είναι διαθέσιμη.");
@@ -96,27 +96,39 @@ export async function endpoint(fn: () => Promise<Response>) {
 }
 export async function seed() {
   const db = database();
-  await db
-    .prepare(
-      "INSERT OR IGNORE INTO properties (id,slug,name,location,description,max_guests,bedrooms,min_nights,base_price,cleaning_fee,published,image,export_token,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    )
-    .bind(
-      villa.id,
-      villa.slug,
-      villa.name,
-      villa.location,
-      villa.description,
-      6,
-      2,
-      1,
-      null,
-      0,
-      1,
-      villa.image,
-      crypto.randomUUID() + crypto.randomUUID(),
-      new Date().toISOString(),
-    )
-    .run();
+  await db.batch(
+    calendarUnits.flatMap((unit) => {
+      const p = unit.property;
+      return [
+        db
+          .prepare(
+            "INSERT OR IGNORE INTO properties (id,slug,name,location,description,max_guests,bedrooms,min_nights,base_price,cleaning_fee,published,image,export_token,created_at,internal_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          )
+          .bind(
+            p.id,
+            p.slug,
+            p.name,
+            p.location,
+            p.description,
+            p.max_guests,
+            p.bedrooms,
+            p.min_nights,
+            p.base_price,
+            p.cleaning_fee,
+            p.published,
+            p.image,
+            crypto.randomUUID() + crypto.randomUUID(),
+            new Date().toISOString(),
+            unit.code,
+          ),
+        db
+          .prepare(
+            "UPDATE properties SET internal_code=? WHERE id=? AND internal_code IS NULL AND NOT EXISTS(SELECT 1 FROM properties WHERE internal_code=?)",
+          )
+          .bind(unit.code, p.id, unit.code),
+      ];
+    }),
+  );
 }
 export async function properties() {
   await seed();
