@@ -52,8 +52,9 @@ const defaultSettings: PublicSiteSettings = {
 };
 const copy = {
   el: {
-    nav: ["Η βίλα", "Η εμπειρία", "Φωτογραφίες", "Η τοποθεσία"],
-    book: "Η διαμονή σας",
+    nav: ["Διαμονή", "Εμπειρίες", "Φωτογραφίες", "Τοποθεσία"],
+    staysNav: "Καταλύματα",
+    book: "Κράτηση",
     eyebrow: "ΑΚΡΙΤΟΧΩΡΙ · ΜΕΣΣΗΝΙΑ",
     hero: (
       <>
@@ -211,8 +212,9 @@ const copy = {
     demoContact: "Προσωρινά δοκιμαστικά στοιχεία",
   },
   en: {
-    nav: ["The villa", "The experience", "Gallery", "The location"],
-    book: "Your stay",
+    nav: ["Stay", "Experiences", "Gallery", "Location"],
+    staysNav: "Our stays",
+    book: "Book your stay",
     eyebrow: "AKRITOCHORI · MESSINIA",
     hero: (
       <>
@@ -446,6 +448,7 @@ export default function App({
     hasProperties = initialProperties.length > 0,
     showVillaStory = Boolean(featured),
     dialogRef = useRef<HTMLDialogElement>(null),
+    menuToggleRef = useRef<HTMLButtonElement>(null),
     previousFocus = useRef<HTMLElement | null>(null),
     availabilityRef = useRef<AbortController | null>(null),
     inFlightRef = useRef<"availability" | "request" | null>(null),
@@ -507,7 +510,11 @@ export default function App({
     } else {
       dialogRef.current?.close();
       document.body.style.overflow = "";
-      previousFocus.current?.focus();
+      if (previousFocus.current) {
+        if (previousFocus.current.getClientRects().length)
+          previousFocus.current.focus();
+        else menuToggleRef.current?.focus();
+      }
     }
     return () => {
       document.body.style.overflow = "";
@@ -759,7 +766,15 @@ export default function App({
           {t.demoNotice}
         </div>
       )}
-      <header className="header">
+      <header
+        className="header"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && menu) {
+            setMenu(false);
+            menuToggleRef.current?.focus();
+          }
+        }}
+      >
         <a href="#" className="brand" aria-label="Sunset Luxury Villas">
           <img src={asset("logo.jpg")} alt="Sunset Luxury Villas" />
           <span>
@@ -767,22 +782,42 @@ export default function App({
           </span>
         </a>
         <nav
+          id="primary-navigation"
           aria-label={lang === "el" ? "Κύρια πλοήγηση" : "Main navigation"}
           className={menu ? "nav is-open" : "nav"}
         >
           {(showVillaStory
             ? t.nav.map((text, i) => ({
-                text,
-                href: ["#villa", "#experience", "#gallery", "#location"][i],
+                text:
+                  i === 0 && initialProperties.length > 1 ? t.staysNav : text,
+                href: [
+                  initialProperties.length > 1 ? "#stays" : "#villa",
+                  "#experience",
+                  "#gallery",
+                  "#location",
+                ][i],
               }))
             : hasProperties
-              ? [{ text: t.moreHomes, href: "#stays" }]
+              ? [{ text: t.staysNav, href: "#stays" }]
               : []
           ).map(({ text, href }) => (
             <a key={href} href={href} onClick={() => setMenu(false)}>
               {text}
             </a>
           ))}
+          <button
+            type="button"
+            className="button small nav-booking"
+            aria-haspopup="dialog"
+            disabled={!hasProperties}
+            onClick={() => {
+              setMenu(false);
+              openBooking();
+            }}
+          >
+            {t.book}
+            <ArrowUpRight size={15} />
+          </button>
         </nav>
         <div className="header-actions">
           <button
@@ -796,17 +831,11 @@ export default function App({
             {lang === "el" ? "EN" : "ΕΛ"}
           </button>
           <button
-            className="button small"
-            disabled={!hasProperties}
-            onClick={() => openBooking()}
-          >
-            {t.book}
-            <ArrowUpRight size={15} />
-          </button>
-          <button
+            ref={menuToggleRef}
             className="mobile-menu icon-button"
             aria-label={lang === "el" ? "Μενού" : "Menu"}
             aria-expanded={menu}
+            aria-controls="primary-navigation"
             onClick={() => setMenu(!menu)}
           >
             {menu ? <X /> : <Menu />}

@@ -133,6 +133,7 @@ select:focus-visible {
 }
 .nav {
   display: flex;
+  align-items: center;
   gap: 30px;
   font-size: 11px;
 }
@@ -1238,17 +1239,40 @@ footer {
     height: 52px;
   }
   .nav {
-    gap: 17px;
-    font-size: 10px;
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    background: var(--paper);
+    z-index: 5;
+    padding: 20px 4% 25px;
+    box-shadow: 0 20px 30px #15271510;
+  }
+  .nav.is-open {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
+    font-size: 13px;
+  }
+  .nav a {
+    padding: 14px 0;
+  }
+  .nav-booking {
+    margin-top: 8px;
+    min-height: 44px;
+  }
+  .mobile-menu {
+    display: inline-grid !important;
   }
   .header-actions {
     gap: 13px;
   }
-  .header-actions > .button.small {
-    display: none;
-  }
   .header {
     height: 85px;
+    position: relative;
+    z-index: 10;
   }
   .hero {
     height: 610px;
@@ -1452,28 +1476,8 @@ footer {
   .header-actions {
     gap: 7px;
   }
-  .mobile-menu {
-    display: inline-grid !important;
-  }
   .nav {
-    display: none;
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 107px;
-    background: var(--paper);
-    z-index: 5;
-    padding: 25px;
-    box-shadow: 0 20px 30px #15271510;
-  }
-  .nav.is-open {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    font-size: 13px;
-  }
-  .nav a {
-    padding: 10px 0;
+    padding: 20px;
   }
   .hero {
     margin: 0 9px;
