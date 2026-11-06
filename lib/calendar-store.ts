@@ -71,7 +71,7 @@ export async function calendarEntries(
       }>(),
     db
       .prepare(
-        "SELECT calendar_events.id,start,end,provider FROM calendar_events JOIN calendar_feeds ON calendar_feeds.id=calendar_events.feed_id WHERE property_id=? AND start<? AND end>? ORDER BY start,calendar_events.id",
+        "SELECT calendar_events.id,start,end,provider FROM calendar_events JOIN calendar_feeds ON calendar_feeds.id=calendar_events.feed_id WHERE property_id=? AND calendar_feeds.enabled=1 AND start<? AND end>? ORDER BY start,calendar_events.id",
       )
       .bind(propertyId, end, start)
       .all<{

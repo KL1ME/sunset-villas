@@ -13,13 +13,20 @@ if (!["127.0.0.1", "localhost"].includes(new URL(base).hostname))
 const token = process.env.TEST_ADMIN_TOKEN;
 if (!token)
   throw new Error("Set TEST_ADMIN_TOKEN to the local preview ADMIN_TOKEN.");
-async function call(path, input, auth = false, origin = true) {
+async function call(
+  path,
+  input,
+  auth = false,
+  origin = true,
+  extraHeaders = {},
+) {
   const headers = {};
   if (auth) headers.Authorization = `Bearer ${token}`;
   if (input !== undefined) {
     headers["Content-Type"] = "application/json";
     if (origin) headers.Origin = base;
   }
+  Object.assign(headers, extraHeaders);
   const r = await fetch(base + path, {
     method: input === undefined ? "GET" : "POST",
     headers,
@@ -32,7 +39,7 @@ async function call(path, input, auth = false, origin = true) {
   } catch {
     value = text;
   }
-  return { status: r.status, value };
+  return { status: r.status, value, cookie: r.headers.get("set-cookie") };
 }
 let checks = 0;
 function check(value, message) {
@@ -42,6 +49,23 @@ function check(value, message) {
 check(
   (await call("/api/admin")).status === 401,
   "admin rejects anonymous reads",
+);
+const login = await call("/api/admin/session", { token });
+check(
+  login.status === 200 &&
+    login.cookie?.includes("HttpOnly") &&
+    login.cookie?.includes("SameSite=Strict"),
+  "owner login creates a protected session cookie",
+);
+const sessionHeaders = { Cookie: login.cookie?.split(";")[0] || "" };
+check(
+  (await call("/api/admin", undefined, false, true, sessionHeaders)).status ===
+    200,
+  "owner session authenticates admin requests without a browser bearer token",
+);
+check(
+  (await call("/api/admin/session", { token }, false, false)).status === 403,
+  "owner login rejects cross-origin requests",
 );
 const seeded = await call("/api/admin", undefined, true);
 const seededK1 = seeded.value.properties.find(
@@ -67,8 +91,8 @@ const seededAgain = await call("/api/admin", undefined, true);
 check(
   [seededK1, seededK2].every(
     (unit) =>
-      seededAgain.value.properties.find((p) => p.id === unit.id)?.export_token ===
-      unit.export_token,
+      seededAgain.value.properties.find((p) => p.id === unit.id)
+        ?.export_token === unit.export_token,
   ),
   "repeated initialization preserves existing calendar export tokens",
 );
@@ -144,6 +168,28 @@ check(
   "requests may coexist before approval",
 );
 check(
+  typeof a.value.statusToken === "string" && a.value.statusToken.length === 64,
+  "request returns a private guest access token",
+);
+check(
+  (await call(`/api/bookings/${a.value.id}`)).status === 404,
+  "a booking UUID alone never reveals guest status",
+);
+const guestAHeaders = { Authorization: `Bearer ${a.value.statusToken}` };
+const privateA = await call(
+  `/api/bookings/${a.value.id}`,
+  undefined,
+  false,
+  true,
+  guestAHeaders,
+);
+check(
+  privateA.status === 200 &&
+    privateA.value.booking.status === "requested" &&
+    !JSON.stringify(privateA.value.booking).includes("example.invalid"),
+  "private guest status contains stay details without personal contact information",
+);
+check(
   a.value.total === 46650,
   "server ignores forged total and quotes integer cents",
 );
@@ -160,6 +206,17 @@ check(
   approvals.filter((r) => r.status === 200).length === 1 &&
     approvals.filter((r) => r.status === 409).length === 1,
   "concurrent overlapping approvals have exactly one winner",
+);
+const winningId = approvals[0].status === 200 ? a.value.id : b.value.id;
+check(
+  (
+    await call(
+      "/api/admin",
+      { action: "confirm", id: winningId, calendarReviewed: true },
+      true,
+    )
+  ).status === 409,
+  "same-booking confirmation cannot claim its nights twice",
 );
 const blocked = await call(
   `/api/availability?propertyId=${id}&checkIn=${arrival}&checkOut=${departure}&guests=2`,
@@ -304,5 +361,136 @@ check(
     )
   ).value.available === true,
   "release opens dates when no other source blocks them",
+);
+
+const laterArrival = new Date(Date.parse(arrival) + 100 * 86400000)
+  .toISOString()
+  .slice(0, 10);
+const laterDeparture = new Date(Date.parse(laterArrival) + 2 * 86400000)
+  .toISOString()
+  .slice(0, 10);
+const retryStay = {
+  ...stay,
+  checkIn: laterArrival,
+  checkOut: laterDeparture,
+  requestKey: crypto.randomUUID(),
+};
+const retryA = await call("/api/bookings", retryStay),
+  retryB = await call("/api/bookings", retryStay);
+check(
+  retryA.status === 201 &&
+    retryB.status === 201 &&
+    retryA.value.id === retryB.value.id &&
+    retryA.value.statusToken === retryB.value.statusToken,
+  "retrying the same request is idempotent and preserves its private link",
+);
+check(
+  (await call("/api/bookings", { ...retryStay, name: "Different intent" }))
+    .status === 409,
+  "an idempotency key cannot submit changed guest details",
+);
+check(
+  (
+    await call(
+      "/api/admin",
+      { action: "quote", id: retryA.value.id, total: "215,35" },
+      true,
+    )
+  ).value.total === 21535,
+  "owner can set an exact agreed total in cents",
+);
+check(
+  (
+    await call(
+      "/api/admin",
+      { action: "note", id: retryA.value.id, note: "Private fixture note" },
+      true,
+    )
+  ).status === 200,
+  "owner can store a private booking note",
+);
+const retryHeaders = { Authorization: `Bearer ${retryA.value.statusToken}` };
+const refreshedGuest = await call(
+  `/api/bookings/${retryA.value.id}`,
+  undefined,
+  false,
+  true,
+  retryHeaders,
+);
+check(
+  refreshedGuest.value.booking.total === 21535 &&
+    !JSON.stringify(refreshedGuest.value).includes("Private fixture note"),
+  "guest sees the agreed total without the private admin note",
+);
+check(
+  (
+    await call(
+      `/api/bookings/${retryA.value.id}`,
+      { action: "withdraw" },
+      false,
+      true,
+      retryHeaders,
+    )
+  ).status === 200,
+  "guest may withdraw a pending request with private authorization",
+);
+check(
+  (
+    await call(
+      `/api/bookings/${retryA.value.id}`,
+      undefined,
+      false,
+      true,
+      retryHeaders,
+    )
+  ).value.booking.status === "cancelled",
+  "guest status reflects withdrawal",
+);
+const longArrival = new Date(Date.parse(arrival) + 200 * 86400000)
+  .toISOString()
+  .slice(0, 10);
+const longDeparture = new Date(Date.parse(longArrival) + 60 * 86400000)
+  .toISOString()
+  .slice(0, 10);
+const longRequest = await call("/api/bookings", {
+  ...stay,
+  checkIn: longArrival,
+  checkOut: longDeparture,
+  requestKey: crypto.randomUUID(),
+});
+check(
+  longRequest.status === 201 &&
+    (
+      await call(
+        "/api/admin",
+        { action: "confirm", id: longRequest.value.id, calendarReviewed: true },
+        true,
+      )
+    ).status === 200,
+  "native Worker confirms a60-night stay within the D1 statement budget",
+);
+check(
+  (
+    await call(
+      `/api/availability?propertyId=${id}&checkIn=${longArrival}&checkOut=${longDeparture}&guests=2`,
+    )
+  ).value.blocked.length === 60,
+  "all60 confirmed nights are blocked",
+);
+await call("/api/admin", { action: "cancel", id: longRequest.value.id }, true);
+const paged = await call(
+  "/api/admin?pageSize=1&status=cancelled",
+  undefined,
+  true,
+);
+check(
+  paged.value.bookings.length <= 1 &&
+    paged.value.pagination.total >= 1 &&
+    typeof paged.value.stats.requested === "number",
+  "owner API returns filtered pagination and global stats",
+);
+check(
+  (await call("/api/health")).value.payments === "disabled",
+  "public health reports payments disabled",
 );
 console.log(`${checks} local API integration checks passed.`);

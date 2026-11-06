@@ -30,6 +30,7 @@ if (!/^ADMIN_TOKEN="[a-f0-9]{64}"$/m.test(envText))
   );
 chmodSync(privateEnv, 0o600);
 writeFileSync("dist/server/.dev.vars", envText, { mode: 0o600 });
+chmodSync("dist/server/.dev.vars", 0o600);
 writeFileSync(
   "dist/server/wrangler.calendar-preview.json",
   JSON.stringify(config, null, 2) + "\n",

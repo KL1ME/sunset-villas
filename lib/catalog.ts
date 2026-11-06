@@ -30,6 +30,8 @@ export const villa: Property = {
 export const listingUrl =
   "https://www.booking.com/hotel/gr/sunset-luxury-villa-akritochori2.html";
 export const airbnbUrl = "https://www.airbnb.com/rooms/853364043303639063";
+export const liveSiteUrl =
+  "https://sunset-villas.sunset-villas-messinia.workers.dev";
 
 // Owner references are used by the private calendar dashboard. K2 remains a
 // draft until its website content and photos have been reviewed separately.

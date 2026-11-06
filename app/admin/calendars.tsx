@@ -22,9 +22,9 @@ export type CalendarFeedStatus = {
   failure_count: number;
   event_count: number;
   lock_until: string | null;
+  enabled: number;
 };
 type Props = {
-  token: string;
   properties: (Property & {
     export_token: string;
     internal_code?: string | null;
@@ -48,37 +48,42 @@ const displayTime = (value: string | null) =>
       })
     : "Δεν έχει ολοκληρωθεί";
 export default function CalendarCenter({
-  token,
   properties,
   feeds,
   view,
   reload,
 }: Props) {
   const [propertyId, setPropertyId] = useState(properties[0]?.id || ""),
-    [month, setMonth] = useState(new Date().toISOString().slice(0, 7)),
+    [month, setMonth] = useState(
+      new Intl.DateTimeFormat("sv-SE", {
+        timeZone: "Europe/Athens",
+        year: "numeric",
+        month: "2-digit",
+      }).format(new Date()),
+    ),
     [entries, setEntries] = useState<CalendarEntry[]>([]),
     [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [calendarError, setCalendarError] = useState(""),
     [message, setMessage] = useState(""),
-    [dialog, setDialog] = useState<null | "feed" | "block" | CalendarEntry>(
-      null,
-    ),
+    [dialog, setDialog] = useState<
+      null | "feed" | "block" | "toggle" | CalendarEntry
+    >(null),
+    [toggling, setToggling] = useState<CalendarFeedStatus | null>(null),
     [provider, setProvider] = useState("airbnb"),
     [version, setVersion] = useState(0);
   const dialogRef = useRef<HTMLDialogElement>(null),
-    reloadRef = useRef(reload);
-  reloadRef.current = reload;
+    performing = useRef(false);
   const selected = properties.find((p) => p.id === propertyId),
     propertyFeeds = feeds.filter((f) => f.property_id === propertyId);
   useEffect(() => {
-    const interval = setInterval(() => void reloadRef.current(), 60000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!properties.some((property) => property.id === propertyId))
+      setPropertyId(properties[0]?.id || "");
+  }, [properties, propertyId]);
   useEffect(() => {
-    if (dialog) dialogRef.current?.showModal();
-    else dialogRef.current?.close();
+    if (dialog && !dialogRef.current?.open) dialogRef.current?.showModal();
+    else if (!dialog) dialogRef.current?.close();
   }, [dialog]);
   useEffect(() => {
     if (
@@ -92,7 +97,7 @@ export default function CalendarCenter({
     setEntries([]);
     setCalendarError("");
     fetch("/api/admin/calendar?" + new URLSearchParams({ propertyId, month }), {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -114,16 +119,18 @@ export default function CalendarCenter({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [propertyId, month, token, version, feeds, view]);
+  }, [propertyId, month, version, feeds, view]);
   async function perform(input: object) {
+    if (performing.current) return false;
+    performing.current = true;
     setBusy(true);
     setError("");
     setMessage("");
     try {
       const response = await fetch("/api/admin", {
         method: "POST",
+        credentials: "same-origin",
         headers: {
-          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(input),
@@ -150,6 +157,7 @@ export default function CalendarCenter({
       await reload();
       setVersion((v) => v + 1);
       setBusy(false);
+      performing.current = false;
     }
   }
   async function copyExport() {
@@ -187,8 +195,12 @@ export default function CalendarCenter({
             <select
               aria-label="Κατάλυμα ημερολογίου"
               value={propertyId}
+              disabled={busy || !properties.length}
               onChange={(e) => setPropertyId(e.target.value)}
             >
+              {!properties.length && (
+                <option value="">Προσθέστε κατάλυμα</option>
+              )}
               {properties.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.internal_code ? p.internal_code + " · " : ""}
@@ -213,7 +225,7 @@ export default function CalendarCenter({
       <div className="calendar-toolbar">
         <button
           className="button small"
-          disabled={busy || !propertyFeeds.length}
+          disabled={busy || !propertyFeeds.some((feed) => feed.enabled !== 0)}
           onClick={() => void perform({ action: "syncProperty", propertyId })}
         >
           <RefreshCw size={15} className={busy ? "spin" : ""} />
@@ -221,6 +233,7 @@ export default function CalendarCenter({
         </button>
         <button
           className="text-link"
+          disabled={busy || !selected}
           onClick={() => {
             setError("");
             setDialog("block");
@@ -229,7 +242,11 @@ export default function CalendarCenter({
           <Plus size={15} />
           Κλείσιμο ημερομηνιών
         </button>
-        <button className="text-link" onClick={() => void copyExport()}>
+        <button
+          className="text-link"
+          disabled={!selected}
+          onClick={() => void copyExport()}
+        >
           <Copy size={14} />
           Αντιγραφή iCal του site
         </button>
@@ -249,6 +266,13 @@ export default function CalendarCenter({
           {message}
         </p>
       )}
+      {propertyFeeds.some((feed) => feed.enabled === 0) && (
+        <p className="calendar-message paused-warning" role="status">
+          Υπάρχει πηγή σε παύση. Οι ημερομηνίες της δεν ελέγχονται αυτόματα.
+          Ελέγχετε χειροκίνητα την αντίστοιχη πλατφόρμα πριν επιβεβαιώσετε
+          κράτηση.
+        </p>
+      )}
       <div className="feed-status-grid">
         {["airbnb", "booking"].map((source) => {
           const feed = propertyFeeds.find((f) => f.provider === source),
@@ -260,7 +284,12 @@ export default function CalendarCenter({
           return (
             <article
               className={
-                "feed-status-card " + (feed?.error || stale ? "feed-error" : "")
+                "feed-status-card " +
+                (feed?.enabled === 0
+                  ? "feed-paused"
+                  : feed?.error || stale
+                    ? "feed-error"
+                    : "")
               }
               key={source}
             >
@@ -273,15 +302,17 @@ export default function CalendarCenter({
               <p>
                 {!feed
                   ? "Δεν έχει συνδεθεί"
-                  : inProgress
-                    ? "Γίνεται συγχρονισμός…"
-                    : feed.error
-                      ? "Χρειάζεται έλεγχος"
-                      : stale
-                        ? "Η τελευταία ενημέρωση είναι παλιά"
-                        : !feed.last_synced
-                          ? "Αναμονή πρώτης εισαγωγής"
-                          : "Συνδεδεμένο"}
+                  : feed.enabled === 0
+                    ? "Σε παύση · χειροκίνητος έλεγχος"
+                    : inProgress
+                      ? "Γίνεται συγχρονισμός…"
+                      : feed.error
+                        ? "Χρειάζεται έλεγχος"
+                        : stale
+                          ? "Η τελευταία ενημέρωση είναι παλιά"
+                          : !feed.last_synced
+                            ? "Αναμονή πρώτης εισαγωγής"
+                            : "Συνδεδεμένο"}
               </p>
               {feed && (
                 <>
@@ -289,8 +320,12 @@ export default function CalendarCenter({
                     Τελευταία επιτυχία: {displayTime(feed.last_synced)}
                   </small>
                   <small>
-                    {feed.event_count} ενεργές δεσμεύσεις · Επόμενος έλεγχος:{" "}
-                    {displayTime(feed.next_sync)}
+                    {feed.event_count}{" "}
+                    {feed.enabled === 0 ? "αποθηκευμένες" : "ενεργές"}{" "}
+                    δεσμεύσεις
+                    {feed.enabled !== 0 && (
+                      <> · Επόμενος έλεγχος: {displayTime(feed.next_sync)}</>
+                    )}
                   </small>
                   {feed.error && (
                     <small className="form-error">{feed.error}</small>
@@ -299,6 +334,7 @@ export default function CalendarCenter({
               )}
               <button
                 className="admin-action"
+                disabled={busy || !selected}
                 onClick={() => {
                   setProvider(source);
                   setError("");
@@ -308,6 +344,21 @@ export default function CalendarCenter({
                 {feed ? "Αλλαγή σύνδεσης" : "Σύνδεση iCal"}
                 <Link2 size={12} />
               </button>
+              {feed && (
+                <button
+                  className="admin-action"
+                  disabled={busy}
+                  onClick={() => {
+                    setError("");
+                    setToggling(feed);
+                    setDialog("toggle");
+                  }}
+                >
+                  {feed.enabled === 0
+                    ? "Ενεργοποίηση συγχρονισμού"
+                    : "Παύση σύνδεσης"}
+                </button>
+              )}
             </article>
           );
         })}
@@ -412,10 +463,9 @@ export default function CalendarCenter({
             διαχείρισή τους.
           </p>
           <p>
-            Αν Airbnb και Booking είναι ήδη συνδεδεμένα μεταξύ τους,
-            διατηρήστε αυτές τις συνδέσεις. Προσθέστε μόνο το ημερολόγιο του
-            site σε κάθε πλατφόρμα, αφού το backend αποκτήσει δημόσια HTTPS
-            διεύθυνση.
+            Αν Airbnb και Booking είναι ήδη συνδεδεμένα μεταξύ τους, διατηρήστε
+            αυτές τις συνδέσεις. Προσθέστε μόνο το ημερολόγιο του site σε κάθε
+            πλατφόρμα, αφού το backend αποκτήσει δημόσια HTTPS διεύθυνση.
           </p>
           <ol>
             <li>
@@ -466,15 +516,21 @@ export default function CalendarCenter({
         aria-label={
           dialog === "feed"
             ? "Σύνδεση iCal"
-            : dialog === "block"
-              ? "Κλείσιμο ημερομηνιών"
-              : "Άνοιγμα ημερομηνιών"
+            : dialog === "toggle"
+              ? "Αλλαγή συγχρονισμού"
+              : dialog === "block"
+                ? "Κλείσιμο ημερομηνιών"
+                : "Άνοιγμα ημερομηνιών"
         }
-        onCancel={() => setDialog(null)}
+        onCancel={(event) => {
+          if (busy) event.preventDefault();
+          else setDialog(null);
+        }}
       >
         <button
           className="dialog-close icon-button"
           aria-label="Κλείσιμο"
+          disabled={busy}
           onClick={() => setDialog(null)}
         >
           <X size={20} />
@@ -524,6 +580,43 @@ export default function CalendarCenter({
                 Σύνδεση & πρώτη εισαγωγή
               </button>
             </form>
+          </>
+        ) : dialog === "toggle" && toggling ? (
+          <>
+            <h2>
+              {toggling.enabled === 0
+                ? "Ενεργοποίηση σύνδεσης"
+                : "Παύση σύνδεσης"}
+            </h2>
+            <p>
+              {toggling.provider === "airbnb" ? "Airbnb" : "Booking.com"} ·{" "}
+              {selected?.name}
+            </p>
+            <p className="admin-help">
+              {toggling.enabled === 0
+                ? "Θα ζητηθεί νέα εισαγωγή από αυτή την πηγή. Αν ο σύνδεσμος παραμένει προβληματικός, η κατάσταση θα δείξει ότι χρειάζεται έλεγχο."
+                : "Δεν θα γίνεται αυτόματος έλεγχος αυτής της πηγής. Θα χρειάζεται χειροκίνητος έλεγχος της πλατφόρμας πριν από κάθε επιβεβαίωση κράτησης. Η παύση εδώ δεν αλλάζει τις συνδέσεις μέσα σε Airbnb ή Booking."}
+            </p>
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+            <button
+              className="button"
+              disabled={busy}
+              onClick={() =>
+                void perform({
+                  action: "feedEnabled",
+                  id: toggling.id,
+                  enabled: toggling.enabled === 0,
+                })
+              }
+            >
+              {toggling.enabled === 0
+                ? "Ενεργοποίηση & έλεγχος"
+                : "Παύση με χειροκίνητο έλεγχο"}
+            </button>
           </>
         ) : dialog === "block" ? (
           <>

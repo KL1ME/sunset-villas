@@ -9,6 +9,19 @@ import {
 } from "./domain";
 import { calendarUnits, type Property } from "./catalog";
 import { synchronizeFeed, SYNC_INTERVAL_MS } from "./calendar-sync";
+import {
+  hashSecret,
+  sameSecret,
+  readSessionCookie,
+  verifyAdminSession,
+} from "./auth";
+import {
+  bookingAccessToken,
+  bookingResponse,
+  type AccessibleBooking,
+} from "./booking-access";
+import { publicSettings } from "./settings";
+import { reserveInventory } from "./inventory";
 export function database() {
   if (!env.DB) throw new Problem(503, "Η βάση δεδομένων δεν είναι διαθέσιμη.");
   return env.DB;
@@ -63,15 +76,9 @@ export async function admin(request: Request) {
     throw new Problem(503, "Το backend χρειάζεται ρύθμιση του ADMIN_TOKEN.");
   const provided =
     request.headers.get("authorization")?.replace(/^Bearer /, "") || "";
-  const digest = async (v: string) =>
-    new Uint8Array(
-      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)),
-    );
-  const a = await digest(expected),
-    b = await digest(provided);
-  let difference = 0;
-  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
-  if (difference !== 0) throw new Problem(401, "Μη έγκυρο κλειδί διαχείρισης.");
+  if (provided && (await sameSecret(expected, provided))) return;
+  if (await verifyAdminSession(readSessionCookie(request), expected)) return;
+  throw new Problem(401, "Μη έγκυρο κλειδί διαχείρισης.");
 }
 export async function endpoint(fn: () => Promise<Response>) {
   try {
@@ -174,7 +181,7 @@ export async function refreshStale(propertyId: string) {
   const feeds = (
     await db
       .prepare(
-        "SELECT id,last_synced,error FROM calendar_feeds WHERE property_id=?",
+        "SELECT id,last_synced,error FROM calendar_feeds WHERE property_id=? AND enabled=1",
       )
       .bind(propertyId)
       .all<{ id: string; last_synced: string | null; error: string | null }>()
@@ -184,12 +191,16 @@ export async function refreshStale(propertyId: string) {
       !feed.last_synced ||
       Date.parse(feed.last_synced) < Date.now() - SYNC_INTERVAL_MS
     )
-      await synchronizeFeed(db, feed.id);
+      try {
+        await synchronizeFeed(db, feed.id);
+      } catch {
+        /* Fail closed below with a stable public error. */
+      }
   }
   const current = (
     await db
       .prepare(
-        "SELECT last_synced,error FROM calendar_feeds WHERE property_id=?",
+        "SELECT last_synced,error FROM calendar_feeds WHERE property_id=? AND enabled=1",
       )
       .bind(propertyId)
       .all<{ last_synced: string | null; error: string | null }>()
@@ -220,7 +231,7 @@ export async function blocked(propertyId: string, start: string, end: string) {
       .all<{ date: string }>(),
     db
       .prepare(
-        "SELECT start,end FROM calendar_events WHERE feed_id IN (SELECT id FROM calendar_feeds WHERE property_id=?) AND start<? AND end>?",
+        "SELECT start,end FROM calendar_events WHERE feed_id IN (SELECT id FROM calendar_feeds WHERE property_id=? AND enabled=1) AND start<? AND end>?",
       )
       .bind(propertyId, end, start)
       .all<{ start: string; end: string }>(),
@@ -287,15 +298,61 @@ export async function createBooking(
   if (input.consent !== true)
     throw new Problem(400, "Απαιτείται αποδοχή της ενημέρωσης απορρήτου.");
   if (input.website) throw new Problem(400, "Μη έγκυρο αίτημα.");
+  const settings = await publicSettings(database());
+  if (!settings.booking_enabled)
+    throw new Problem(
+      503,
+      "Τα αιτήματα δεν είναι ακόμη διαθέσιμα. Επικοινωνήστε με το κατάλυμα.",
+    );
+  const requestKey =
+    input.requestKey == null
+      ? crypto.randomUUID()
+      : cleanText(input.requestKey, 100, 16);
+  if (!/^[A-Za-z0-9_-]+$/.test(requestKey))
+    throw new Problem(400, "Μη έγκυρο αναγνωριστικό αιτήματος.");
+  const fingerprint = await hashSecret(
+    JSON.stringify([
+      p.id,
+      stay.checkIn,
+      stay.checkOut,
+      stay.guests,
+      name,
+      email,
+      phone,
+    ]),
+  );
+  const existing = await database()
+    .prepare(
+      "SELECT id,request_key,status_token_hash,status,total,request_fingerprint FROM bookings WHERE request_key=?",
+    )
+    .bind(requestKey)
+    .first<AccessibleBooking>();
+  if (existing) {
+    if (existing.request_fingerprint !== fingerprint)
+      throw new Problem(
+        409,
+        "Το ίδιο αναγνωριστικό χρησιμοποιήθηκε για διαφορετικό αίτημα.",
+      );
+    return bookingResponse(
+      env.BOOKING_SECRET || env.ADMIN_TOKEN,
+      existing,
+      database(),
+    );
+  }
   await rateLimit(request, email);
   await refreshStale(p.id);
   if ((await blocked(p.id, stay.checkIn, stay.checkOut)).length)
     throw new Problem(409, "Υπάρχει δέσμευση στις ημερομηνίες που επιλέξατε.");
   const id = crypto.randomUUID(),
-    total = quote(stay.nights.length, p.base_price, p.cleaning_fee);
+    total = quote(stay.nights.length, p.base_price, p.cleaning_fee),
+    statusToken = await bookingAccessToken(
+      env.BOOKING_SECRET || env.ADMIN_TOKEN,
+      { id, request_key: requestKey },
+    ),
+    now = new Date().toISOString();
   await database()
     .prepare(
-      "INSERT INTO bookings (id,property_id,check_in,check_out,guests,name,email,phone,status,total,payment_status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO bookings (id,property_id,check_in,check_out,guests,name,email,phone,status,total,payment_status,created_at,request_key,request_fingerprint,status_token_hash,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING",
     )
     .bind(
       id,
@@ -309,12 +366,35 @@ export async function createBooking(
       "requested",
       total,
       "unpaid",
-      new Date().toISOString(),
+      now,
+      requestKey,
+      fingerprint,
+      await hashSecret(statusToken),
+      now,
     )
     .run();
-  return { id, status: "requested", total };
+  const stored = await database()
+    .prepare(
+      "SELECT id,request_key,status_token_hash,status,total,request_fingerprint FROM bookings WHERE request_key=?",
+    )
+    .bind(requestKey)
+    .first<AccessibleBooking>();
+  if (!stored || stored.request_fingerprint !== fingerprint)
+    throw new Problem(
+      409,
+      "Το αναγνωριστικό χρησιμοποιήθηκε για διαφορετικό αίτημα.",
+    );
+  return bookingResponse(
+    env.BOOKING_SECRET || env.ADMIN_TOKEN,
+    stored,
+    database(),
+  );
 }
-export async function reserveBooking(id: string, status: "confirmed" | "held") {
+export async function reserveBooking(
+  id: string,
+  status: "confirmed" | "held",
+  expectedTotal?: number | null,
+) {
   const db = database();
   await expireHolds();
   const booking = await db
@@ -332,6 +412,16 @@ export async function reserveBooking(id: string, status: "confirmed" | "held") {
   if (!booking) throw new Problem(404, "Η κράτηση δεν βρέθηκε.");
   if (booking.status !== "requested")
     throw new Problem(409, "Το αίτημα δεν είναι πλέον σε αναμονή.");
+  if (expectedTotal !== undefined && expectedTotal !== booking.total)
+    throw new Problem(
+      409,
+      "Η συμφωνημένη τιμή άλλαξε. Ανανεώστε το αίτημα πριν από την επιβεβαίωση.",
+    );
+  if (booking.total === null || booking.total < 100)
+    throw new Problem(
+      400,
+      "Ορίστε πρώτα τη συμφωνημένη συνολική τιμή της κράτησης.",
+    );
   const p = await property(booking.property_id, true);
   validateStay(
     {
@@ -345,29 +435,10 @@ export async function reserveBooking(id: string, status: "confirmed" | "held") {
   if ((await blocked(p.id, booking.check_in, booking.check_out)).length)
     throw new Problem(409, "Οι ημερομηνίες δεν είναι διαθέσιμες.");
   const expiry = new Date(Date.now() + 35 * 60_000).toISOString();
-  await db.batch([
-    db
-      .prepare(
-        "UPDATE bookings SET status=?,expires_at=? WHERE id=? AND status='requested'",
-      )
-      .bind(status, status === "held" ? expiry : null, id),
-    ...nightsBetween(booking.check_in, booking.check_out).map((date) =>
-      db
-        .prepare(
-          "INSERT INTO occupied_nights (property_id,date,booking_id) SELECT property_id,?,id FROM bookings WHERE id=? AND status=?",
-        )
-        .bind(date, id, status),
-    ),
-  ]);
-  const current = await db
-    .prepare("SELECT status FROM bookings WHERE id=?")
-    .bind(id)
-    .first<{ status: string }>();
-  if (current?.status !== status)
-    throw new Problem(
-      409,
-      "Η κατάσταση της κράτησης άλλαξε. Ανανεώστε τη σελίδα.",
-    );
+  await reserveInventory(db, booking, status, {
+    now: new Date().toISOString(),
+    expiresAt: status === "held" ? expiry : null,
+  });
   return booking;
 }
 export async function cancelBooking(id: string) {
@@ -385,9 +456,9 @@ export async function cancelBooking(id: string) {
   await db.batch([
     db
       .prepare(
-        "UPDATE bookings SET status='cancelled' WHERE id=? AND payment_status!='paid'",
+        "UPDATE bookings SET status='cancelled',updated_at=? WHERE id=? AND payment_status!='paid'",
       )
-      .bind(id),
+      .bind(new Date().toISOString(), id),
     db
       .prepare(
         "DELETE FROM occupied_nights WHERE booking_id=? AND EXISTS(SELECT 1 FROM bookings WHERE id=? AND status='cancelled')",
@@ -430,7 +501,12 @@ export async function saveProperty(input: Record<string, unknown>) {
   if (input.image) {
     image = cleanText(input.image, 2000);
     if (!/^\/(photos|images)\/[A-Za-z0-9._-]+$/.test(image)) {
-      const u = new URL(image);
+      let u: URL;
+      try {
+        u = new URL(image);
+      } catch {
+        throw new Problem(400, "Η φωτογραφία πρέπει να έχει HTTPS URL.");
+      }
       if (u.protocol !== "https:" || u.username || u.password)
         throw new Problem(400, "Η φωτογραφία πρέπει να έχει HTTPS URL.");
     }

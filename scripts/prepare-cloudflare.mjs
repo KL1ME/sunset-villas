@@ -14,6 +14,9 @@ if (!/^[a-z][a-z0-9-]{2,50}$/.test(workerName))
 const path = "dist/server/wrangler.json",
   config = JSON.parse(readFileSync(path, "utf8"));
 config.name = workerName;
+config.workers_dev = true;
+config.preview_urls = false;
+config.vars = { ...config.vars, PAYMENTS_ENABLED: "disabled" };
 config.d1_databases = [
   {
     binding: "DB",

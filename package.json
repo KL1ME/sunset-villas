@@ -17,7 +17,7 @@
     "build:pages": "vite build --config vite.pages.config.ts",
     "dev:pages": "vite --config vite.pages.config.ts --host 127.0.0.1 --port 5173",
     "prepare:calendars": "node scripts/prepare-private-calendar-preview.mjs",
-    "preview:calendars": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.calendar-preview.json --local --persist-to .wrangler/private-calendars --ip 127.0.0.1 --port 5195 --inspector-port 0"
+    "preview:calendars": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.calendar-preview.json --local --persist-to .wrangler/private-calendars --ip 127.0.0.1 --port 5195 --inspector-port 0 --log-level warn"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

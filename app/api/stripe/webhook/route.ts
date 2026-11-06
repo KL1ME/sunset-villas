@@ -1,9 +1,17 @@
 import { env } from "cloudflare:workers";
-import { endpoint, json, database, expireHolds, boundedText } from "@/lib/server";
+import {
+  endpoint,
+  json,
+  database,
+  expireHolds,
+  boundedText,
+} from "@/lib/server";
 import { Problem, nightsBetween } from "@/lib/domain";
 import { verifyStripeSignature } from "@/lib/payments";
 export const POST = (request: Request) =>
   endpoint(async () => {
+    if (env.PAYMENTS_ENABLED !== "test")
+      throw new Problem(503, "Οι πληρωμές είναι απενεργοποιημένες.");
     if (!env.STRIPE_WEBHOOK_SECRET)
       throw new Problem(503, "Το webhook δεν έχει ρυθμιστεί.");
     if (Number(request.headers.get("content-length") || 0) > 200000)

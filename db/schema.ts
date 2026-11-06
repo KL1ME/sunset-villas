@@ -38,6 +38,11 @@ export const bookings = sqliteTable("bookings", {
   paymentStatus: text("payment_status").notNull().default("unpaid"),
   stripeSession: text("stripe_session").unique(),
   checkoutTokenHash: text("checkout_token_hash"),
+  statusTokenHash: text("status_token_hash"),
+  requestKey: text("request_key").unique(),
+  requestFingerprint: text("request_fingerprint"),
+  adminNote: text("admin_note").notNull().default(""),
+  updatedAt: text("updated_at"),
   expiresAt: text("expires_at"),
   createdAt: text("created_at").notNull(),
 });
@@ -63,6 +68,7 @@ export const calendarFeeds = sqliteTable(
       .references(() => properties.id),
     provider: text("provider").notNull(),
     url: text("url").notNull(),
+    enabled: integer("enabled").notNull().default(1),
     lastSynced: text("last_synced"),
     error: text("error"),
     lastAttempt: text("last_attempt"),
@@ -109,4 +115,9 @@ export const calendarBlocks = sqliteTable("calendar_blocks", {
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull(),
   releasedAt: text("released_at"),
+});
+
+export const siteSettings = sqliteTable("site_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
 });

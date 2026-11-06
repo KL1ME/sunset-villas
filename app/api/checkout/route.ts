@@ -13,6 +13,8 @@ export const POST = (request: Request) =>
   endpoint(async () => {
     sameOrigin(request);
     await admin(request);
+    if (env.PAYMENTS_ENABLED !== "test")
+      throw new Problem(503, "Οι πληρωμές είναι απενεργοποιημένες.");
     if (
       !env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ||
       !env.STRIPE_WEBHOOK_SECRET

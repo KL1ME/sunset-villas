@@ -15,36 +15,44 @@ import {
   property,
 } from "@/lib/server";
 import { Problem, cleanText } from "@/lib/domain";
-import { configureCalendarFeed } from "@/lib/calendar-sync";
+import { configureCalendarFeed, setFeedEnabled } from "@/lib/calendar-sync";
 import { addCalendarBlock, releaseCalendarBlock } from "@/lib/calendar-store";
+import { publicSettings, saveSettings } from "@/lib/settings";
+import {
+  listAdminBookings,
+  saveBookingQuote,
+  saveBookingNote,
+} from "@/lib/admin-bookings";
+import { statusLink } from "@/lib/booking-access";
 export const GET = (request: Request) =>
   endpoint(async () => {
     await admin(request);
     await seed();
     await expireHolds();
     const db = database();
-    const [properties, bookings, feeds] = await Promise.all([
-      db.prepare("SELECT * FROM properties ORDER BY created_at,id").all(),
-      db
-        .prepare(
-          "SELECT bookings.*,properties.name AS property_name FROM bookings JOIN properties ON properties.id=bookings.property_id ORDER BY bookings.created_at DESC LIMIT 200",
-        )
-        .all(),
-      db
-        .prepare(
-          "SELECT id,property_id,provider,last_synced,error,last_attempt,next_sync,failure_count,event_count,lock_until FROM calendar_feeds",
-        )
-        .all(),
-    ]);
+    const [properties, bookingPage, feeds, settings, maintenance] =
+      await Promise.all([
+        db.prepare("SELECT * FROM properties ORDER BY created_at,id").all(),
+        listAdminBookings(db, new URL(request.url).searchParams),
+        db
+          .prepare(
+            "SELECT id,property_id,provider,enabled,last_synced,error,last_attempt,next_sync,failure_count,event_count,lock_until FROM calendar_feeds",
+          )
+          .all(),
+        publicSettings(db),
+        db
+          .prepare(
+            "SELECT key,value FROM site_settings WHERE key IN ('last_maintenance','last_calendar_sync')",
+          )
+          .all(),
+      ]);
     return json({
       properties: properties.results,
-      bookings: bookings.results,
+      ...bookingPage,
       feeds: feeds.results,
-      payments:
-        env.STRIPE_SECRET_KEY?.startsWith("sk_test_") &&
-        !!env.STRIPE_WEBHOOK_SECRET
-          ? "test"
-          : "unconfigured",
+      settings,
+      system: maintenance.results,
+      payments: "disabled",
     });
   });
 export const POST = (request: Request) =>
@@ -52,6 +60,37 @@ export const POST = (request: Request) =>
     sameOrigin(request);
     await admin(request);
     const input = await body(request);
+    if (input.action === "settings")
+      return json(await saveSettings(database(), input));
+    if (input.action === "quote")
+      return json(
+        await saveBookingQuote(
+          database(),
+          cleanText(input.id, 100),
+          input.total,
+        ),
+      );
+    if (input.action === "note")
+      return json(
+        await saveBookingNote(database(), cleanText(input.id, 100), input.note),
+      );
+    if (input.action === "statusLink")
+      return json(
+        await statusLink(
+          database(),
+          env.BOOKING_SECRET || env.ADMIN_TOKEN,
+          cleanText(input.id, 100),
+          new URL(request.url).origin,
+        ),
+      );
+    if (input.action === "feedEnabled")
+      return json(
+        await setFeedEnabled(
+          database(),
+          cleanText(input.id, 100),
+          input.enabled as boolean,
+        ),
+      );
     if (input.action === "property") return json(await saveProperty(input));
     if (input.action === "feed") {
       const p = await property(input.propertyId, true);
@@ -61,6 +100,7 @@ export const POST = (request: Request) =>
           p.id,
           cleanText(input.provider, 20),
           input.url,
+          { enabled: input.enabled !== false },
         ),
       );
     }
@@ -68,7 +108,9 @@ export const POST = (request: Request) =>
       const p = await property(input.propertyId, true),
         feeds = (
           await database()
-            .prepare("SELECT id FROM calendar_feeds WHERE property_id=?")
+            .prepare(
+              "SELECT id FROM calendar_feeds WHERE property_id=? AND enabled=1",
+            )
             .bind(p.id)
             .all<{ id: string }>()
         ).results;
@@ -110,7 +152,17 @@ export const POST = (request: Request) =>
           400,
           "Επιβεβαιώστε πρώτα τον έλεγχο διαθεσιμότητας στις πλατφόρμες.",
         );
-      await reserveBooking(cleanText(input.id, 100), "confirmed");
+      if (
+        input.expectedTotal !== undefined &&
+        (typeof input.expectedTotal !== "number" ||
+          !Number.isSafeInteger(input.expectedTotal))
+      )
+        throw new Problem(400, "Μη έγκυρη συμφωνημένη τιμή.");
+      await reserveBooking(
+        cleanText(input.id, 100),
+        "confirmed",
+        input.expectedTotal as number | undefined,
+      );
       return json({ ok: true });
     }
     if (input.action === "cancel") {

@@ -6,6 +6,7 @@ export type FeedRecord = {
   property_id: string;
   provider: string;
   url: string;
+  enabled: number;
   last_synced: string | null;
   last_attempt: string | null;
   next_sync: string | null;
@@ -21,10 +22,12 @@ export type SyncOptions = {
   fetcher?: typeof fetch;
   now?: () => Date;
   force?: boolean;
+  enabled?: boolean;
 };
 export type SyncResult = {
   id: string;
-  status: "updated" | "unchanged" | "busy" | "deferred" | "superseded";
+  status:
+    "updated" | "unchanged" | "busy" | "deferred" | "superseded" | "paused";
   events: number;
 };
 function safeHeader(value: string | null) {
@@ -61,7 +64,7 @@ export async function synchronizeFeed(
   const feed = await db
     .prepare(
       `UPDATE calendar_feeds SET sync_token=?,lock_until=?,last_attempt=?
-   WHERE id=? AND (sync_token IS NULL OR lock_until<=?) AND (?=1 OR next_sync IS NULL OR next_sync<=?) RETURNING *`,
+   WHERE id=? AND enabled=1 AND (sync_token IS NULL OR lock_until<=?) AND (?=1 OR next_sync IS NULL OR next_sync<=?) RETURNING *`,
     )
     .bind(
       token,
@@ -76,7 +79,7 @@ export async function synchronizeFeed(
   if (!feed) {
     const current = await db
       .prepare(
-        "SELECT id,sync_token,lock_until,event_count FROM calendar_feeds WHERE id=?",
+        "SELECT id,enabled,sync_token,lock_until,event_count FROM calendar_feeds WHERE id=?",
       )
       .bind(id)
       .first<FeedRecord>();
@@ -84,9 +87,11 @@ export async function synchronizeFeed(
     return {
       id,
       status:
-        current.sync_token && current.lock_until! > started.toISOString()
-          ? "busy"
-          : "deferred",
+        current.enabled === 0
+          ? "paused"
+          : current.sync_token && current.lock_until! > started.toISOString()
+            ? "busy"
+            : "deferred",
       events: current.event_count,
     };
   }
@@ -223,14 +228,16 @@ export async function configureCalendarFeed(
     id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO calendar_feeds (id,property_id,provider,url) VALUES (?,?,?,?) ON CONFLICT(property_id,provider) DO UPDATE SET url=excluded.url,last_synced=NULL,last_attempt=NULL,next_sync=NULL,etag=NULL,last_modified=NULL,error=NULL,failure_count=0,sync_token=NULL,lock_until=NULL`,
+      `INSERT INTO calendar_feeds (id,property_id,provider,url,enabled) VALUES (?,?,?,?,?) ON CONFLICT(property_id,provider) DO UPDATE SET url=excluded.url,enabled=excluded.enabled,last_synced=NULL,last_attempt=NULL,next_sync=NULL,etag=NULL,last_modified=NULL,error=NULL,failure_count=0,sync_token=NULL,lock_until=NULL`,
     )
-    .bind(id, propertyId, provider, url)
+    .bind(id, propertyId, provider, url, options.enabled === false ? 0 : 1)
     .run();
   const row = await db
     .prepare("SELECT id FROM calendar_feeds WHERE property_id=? AND provider=?")
     .bind(propertyId, provider)
     .first<{ id: string }>();
+  if (options.enabled === false)
+    return { id: row!.id, status: "paused" as const, events: 0 };
   return synchronizeFeed(db, row!.id, { ...options, force: true });
 }
 export async function synchronizeDueFeeds(
@@ -243,7 +250,7 @@ export async function synchronizeDueFeeds(
   const feeds = (
     await db
       .prepare(
-        `SELECT id FROM calendar_feeds WHERE (next_sync IS NULL OR next_sync<=?) AND (sync_token IS NULL OR lock_until<=?) ORDER BY COALESCE(next_sync,''),id LIMIT 6`,
+        `SELECT id FROM calendar_feeds WHERE enabled=1 AND (next_sync IS NULL OR next_sync<=?) AND (sync_token IS NULL OR lock_until<=?) ORDER BY COALESCE(next_sync,''),id LIMIT 6`,
       )
       .bind(stamp, stamp)
       .all<{ id: string }>()
@@ -257,4 +264,21 @@ export async function synchronizeDueFeeds(
     }
   }
   return results;
+}
+
+export async function setFeedEnabled(
+  db: D1Database,
+  id: string,
+  enabled: boolean,
+) {
+  if (typeof enabled !== "boolean")
+    throw new Problem(400, "Επιλέξτε ενεργή σύνδεση ή παύση.");
+  const result = await db
+    .prepare(
+      "UPDATE calendar_feeds SET enabled=?,sync_token=NULL,lock_until=NULL,next_sync=NULL WHERE id=?",
+    )
+    .bind(enabled ? 1 : 0, id)
+    .run();
+  if (!result.meta.changes) throw new Problem(404, "Δεν βρέθηκε ημερολόγιο.");
+  return { ok: true, enabled };
 }
